@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<properties>
+<!-- Basic Parser Configuration -->
+<parsers>
+    <!-- Configure PST/Outlook Parser -->
+    <parser class="org.apache.tika.parser.microsoft.pst.OutlookPSTParser">
+        <params>
+            <param name="extractAttachments" type="bool">true</param>
+            <param name="maxConcurrentMessages" type="int">1</param>
+            <param name="maxAttachmentSize" type="long">107374182400</param><!-- 100GB -->
+        </params>
+    </parser>
+
+    <!-- Configure ZIP Parser -->
+    <parser class="org.apache.tika.parser.pkg.PackageParser">
+        <params>
+            <param name="maxEntries" type="long">5000000</param>
+            <param name="maxCompressedRatio" type="long">5000</param>
+        </params>
+    </parser>
+
+    <!-- Configure Office Parser -->
+    <parser class="org.apache.tika.parser.microsoft.OfficeParser">
+        <params>
+            <param name="useSAXPptxExtractor" type="bool">true</param>
+            <param name="useSAXDocxExtractor" type="bool">true</param>
+            <param name="includeDeletedContent" type="bool">false</param>
+            <param name="includeHeadersAndFooters" type="bool">true</param>
+            <param name="includeMovedContent" type="bool">false</param>
+            <param name="concatenatePhoneticRuns" type="bool">false</param>
+        </params>
+    </parser>
+</parsers>
+
+<!-- Global Parser Settings -->
+<parser>
+    <recursion-maxDepth>100</recursion-maxDepth>
+    <markup-maxLineLength>-1</markup-maxLineLength>
+</parser>
+
+<!-- Detector Configuration -->
+<detectors>
+    <detector class="org.apache.tika.detect.DefaultDetector"/>
+</detectors>
+
+<!-- Service Loader Configuration -->
+<service-loader initializableProblemHandler="ignore"/>
+
+<!-- Parser Timeout Settings -->
+<parser-timeout>300</parser-timeout>
+<write-limit-bytes>107374182400</write-limit-bytes><!-- 100GB -->
+<max-string-length>-1</max-string-length>
+</properties>

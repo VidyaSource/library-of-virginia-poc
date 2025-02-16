@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="fa5ebf8d-395d-4b2d-bffe-d938dc0b7659" name="Library" url="http://ftp.virginiamemory.com">
+        <fileTransfer host="ftp.virginiamemory.com" port="7110">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

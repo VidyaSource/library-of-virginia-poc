@@ -1,0 +1,5 @@
+ftp:
+    host: ftp.virginiamemory.com
+    port: 7110
+    username: LVAFTPUSER
+    password: Lva321
