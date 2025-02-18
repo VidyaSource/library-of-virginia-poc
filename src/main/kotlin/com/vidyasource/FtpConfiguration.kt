@@ -1,7 +1,6 @@
 package com.vidyasource
 
 
-import dev.langchain4j.data.document.loader.UrlDocumentLoader
 import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser
 import org.apache.commons.net.ftp.FTPClient
 import org.apache.tika.config.TikaConfig
@@ -18,17 +17,18 @@ import org.springframework.expression.common.LiteralExpression
 import org.springframework.integration.channel.DirectChannel
 import org.springframework.integration.dsl.IntegrationFlow
 import org.springframework.integration.dsl.integrationFlow
+import org.springframework.integration.file.FileReadingMessageSource
+import org.springframework.integration.file.filters.RegexPatternFileListFilter
 import org.springframework.integration.file.remote.gateway.AbstractRemoteFileOutboundGateway
 import org.springframework.integration.file.support.FileExistsMode
 import org.springframework.integration.ftp.filters.FtpRegexPatternFileListFilter
 import org.springframework.integration.ftp.gateway.FtpOutboundGateway
 import org.springframework.integration.ftp.session.DefaultFtpSessionFactory
 import org.springframework.integration.ftp.session.FtpFileInfo
-import org.springframework.integration.metadata.PropertiesPersistingMetadataStore
 import org.springframework.integration.support.MessageBuilder
 import org.springframework.messaging.Message
-import java.util.function.Supplier
-import org.apache.tika.metadata.Metadata
+import java.io.File
+
 
 @ConfigurationProperties(prefix = "ftp")
 data class FtpProperties @ConstructorBinding constructor(
@@ -40,25 +40,13 @@ data class FtpProperties @ConstructorBinding constructor(
 
 data class LibraryFile(val fullPathName: String, val timestamp: Long)
 
-class TextDocumentParser {
-    private val tikaConfig by lazy {
-        TikaConfig(ClassLoader.getSystemResourceAsStream("tika-config.xml"))
-    }
-
-    val parser by lazy {
-        ApacheTikaDocumentParser(
-            { AutoDetectParser(tikaConfig) },
-            { BodyContentHandler(-1) },
-            { Metadata() },
-            { ParseContext() },
-            true
-        )
-    }
-}
 
 @Configuration
 class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
-    val textDocumentParser = TextDocumentParser()
+    private val OLLAMA_IMAGE = "ollama/ollama:latest"
+    private val DOCUMENT_MODEL = "llama3.2:1b"
+    private val IMAGE_MODEL = "llama3.2-vision:11b"
+    private val NEW_IMAGE_NAME = "vidyasource/ollama-test"
 
     fun ftpSessionFactory() = DefaultFtpSessionFactory().apply {
         setHost(ftpProperties.host)
@@ -67,16 +55,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         setPassword(ftpProperties.password)
         setClientMode(FTPClient.PASSIVE_LOCAL_DATA_CONNECTION_MODE)
     }
-
-
-    @Bean
-    fun metadataStore(): PropertiesPersistingMetadataStore {
-        return PropertiesPersistingMetadataStore().apply {
-            setBaseDirectory("./metadata")
-            afterPropertiesSet()
-        }
-    }
-
 
     @Bean
     fun inputChannel() = DirectChannel()
@@ -92,10 +70,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         setOption(AbstractRemoteFileOutboundGateway.Option.RECURSIVE)
         //setOption(AbstractRemoteFileOutboundGateway.Option.NAME_ONLY)
         setFilter(FtpRegexPatternFileListFilter("""^(?!.*\.zip$).*"""))
-
-
-        //outputChannel
-        //setFileExistsMode(FileExistsMode.APPEND)
     }
 
     @Bean
@@ -108,19 +82,23 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
 
 
     fun fileTransformer(ftpFileInfo: FtpFileInfo): LibraryFile {
-        println("ftpFileInfo: $ftpFileInfo")
         return LibraryFile(
             fullPathName = ftpFileInfo.filename,
             timestamp = ftpFileInfo.modified
         )
     }
 
-    fun parseDocument(path: String): String {
-        val url =
-            "ftp://${ftpProperties.username}:${ftpProperties.password}@${ftpProperties.host}:${ftpProperties.port}/${path}"
 
-        val document = UrlDocumentLoader.load(url, textDocumentParser.parser)
-        return document.text()
+    @Bean
+    fun fileReadingMessageSource(): FileReadingMessageSource = FileReadingMessageSource(10).apply {
+        setDirectory(File("/Users/neilchaudhuri/Vidya/applications/library-of-virginia-poc/local"))
+        setAutoCreateDirectory(true)
+
+        setFilter(RegexPatternFileListFilter("""^(?!.*\.writing$)(?!\.DS_Store$).*"""))
+        setScanEachPoll(true)
+        isUseWatchService = true
+        setWatchMaxDepth(2)
+
     }
 
 
@@ -138,11 +116,27 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             channel { queue(10) }
             transform<LibraryFile> { "/RFI No. LVA-AI-25-009/${it.fullPathName}" }
             handle(getFileOutboundGateway)
-            //transform<LibraryFile> { parseDocument(it.fullPathName) }
+
             handle { file: Message<*> ->
-                println("LibraryFile: $file")
+                println("Flow 1: $file")
             }
         }
     }
+
+
+    @Bean
+    fun fileReaderFlow(fileReadingMessageSource: FileReadingMessageSource): IntegrationFlow {
+        return integrationFlow(fileReadingMessageSource) {
+            log("starting file reader flow")
+            handle { file: Message<*> ->
+                println("File processor: $file")
+            }
+            //route<Message<*>> { m -> if (m.headers[FileHeaders.FILENAME].toString().endsWith(".jpg")) "imageChannel" else "textChannel" }
+        }
+    }
+
+
+
+
 }
 
