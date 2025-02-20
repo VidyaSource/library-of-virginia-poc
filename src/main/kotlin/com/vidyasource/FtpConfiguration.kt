@@ -1,6 +1,7 @@
 package com.vidyasource
 
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import dev.langchain4j.data.document.DocumentParser
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader
 import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser
@@ -23,6 +24,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Lazy
 import org.springframework.expression.common.LiteralExpression
 import org.springframework.http.HttpMethod
+import org.springframework.http.MediaType
 import org.springframework.integration.annotation.ServiceActivator
 import org.springframework.integration.channel.DirectChannel
 import org.springframework.integration.channel.QueueChannel
@@ -40,6 +42,8 @@ import org.springframework.integration.ftp.session.FtpFileInfo
 import org.springframework.integration.http.outbound.HttpRequestExecutingMessageHandler
 import org.springframework.integration.support.MessageBuilder
 import org.springframework.messaging.Message
+import org.springframework.messaging.MessageHeaders
+import org.springframework.util.LinkedMultiValueMap
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.ollama.OllamaContainer
 import org.testcontainers.utility.DockerImageName
@@ -106,6 +110,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         //setOption(AbstractRemoteFileOutboundGateway.Option.STREAM)
         setFileExistsMode(FileExistsMode.APPEND)
         setSendTimeout(Long.MAX_VALUE)
+        setLocalFilenameGeneratorExpressionString("#remoteFileName.replace(' ', '-')")
     }
 
 
@@ -228,14 +233,14 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
 
     @OptIn(ExperimentalEncodingApi::class)
     @Bean
-    fun imageProcessingFlow(httpHandler: HttpRequestExecutingMessageHandler, ollama: OllamaContainer): IntegrationFlow {
+    fun imageProcessingFlow(httpHandler: HttpRequestExecutingMessageHandler): IntegrationFlow {
         return integrationFlow("imageChannel") {
             log("starting imageProcessing flow")
             transform<Message<File>> { m ->
-                println("Image processor: $m")
+                //println("Image processor: $m")
                 val base64 = Base64.encode(m.payload.readBytes())
                 VisionApiRequest(
-                    model = "llama3.2-vision",
+                    model = IMAGE_MODEL,
                     messages = listOf(
                         ApiMessage(
                             role = "user",
@@ -245,7 +250,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
                     )
                 )
             }
-            enrichHeaders { header<String>("Content-Type", "application/x-www-form-urlencoded") }
+            enrichHeaders { header<String>(MessageHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE) }
             handle(httpHandler)
             handle { m: Message<*> ->
                 println("Image processor result: $m")
