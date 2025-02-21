@@ -2,6 +2,7 @@ package com.vidyasource
 
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import dev.langchain4j.data.document.BlankDocumentException
 import dev.langchain4j.data.document.DocumentParser
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader
 import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser
@@ -259,14 +260,17 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     }
 
     @Bean
-    fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel): IntegrationFlow {
+    fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel, imageChannel: QueueChannel): IntegrationFlow {
         return integrationFlow("textChannel") {
             log("starting documentProcessingFlow")
             transform<Message<File>> { m ->
-                println("Doc processor: $m")
-                val document = FileSystemDocumentLoader.loadDocument(m.payload.absolutePath, parser)
-                val summary = chatModel.chat("Summarize this document: ${document.text()}")
-                "Summary of ${m.headers[FileHeaders.FILENAME]}: ${summary}"
+                try {
+                    val document = FileSystemDocumentLoader.loadDocument(m.payload.absolutePath, parser)
+                    val summary = chatModel.chat("Summarize this document: ${document.text()}")
+                    "Summary of ${m.headers[FileHeaders.FILENAME]}: $summary"
+                } catch (e: BlankDocumentException) {
+                    "Document ${m.headers[FileHeaders.FILENAME]} was blank: probably a PDF that was a scan."
+                }
             }
             handle { m: Message<*> ->
                 println("Doc processor: $m")
