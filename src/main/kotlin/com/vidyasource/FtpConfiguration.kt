@@ -1,12 +1,10 @@
 package com.vidyasource
 
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import dev.langchain4j.data.document.BlankDocumentException
 import dev.langchain4j.data.document.DocumentParser
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader
 import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser
-import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder
 import dev.langchain4j.model.ollama.OllamaChatModel
 import jakarta.annotation.PreDestroy
 import org.apache.commons.net.ftp.FTPClient
@@ -44,13 +42,11 @@ import org.springframework.integration.http.outbound.HttpRequestExecutingMessage
 import org.springframework.integration.support.MessageBuilder
 import org.springframework.messaging.Message
 import org.springframework.messaging.MessageHeaders
-import org.springframework.util.LinkedMultiValueMap
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.ollama.OllamaContainer
 import org.testcontainers.utility.DockerImageName
 import java.io.File
 import java.io.IOException
-import java.net.http.HttpClient
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -94,15 +90,9 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     }
 
     @Bean
-    fun listOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "ls", "'RFI No. LVA-AI-25-009'").apply {
-        //setLocalDirectoryExpression(LiteralExpression("local/"))
+    fun listOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "ls").apply {
         setOption(AbstractRemoteFileOutboundGateway.Option.RECURSIVE)
-        //setOption(AbstractRemoteFileOutboundGateway.Option.NAME_ONLY)
         setFilter(FtpRegexPatternFileListFilter("""^(?!.*\.zip$).*"""))
-
-
-        //outputChannel
-        //setFileExistsMode(FileExistsMode.APPEND)
     }
 
     @Bean
@@ -137,7 +127,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
 
 
     @Bean
-    fun integrationFlow(
+    fun downloadFlow(
         inputChannel: DirectChannel,
         listOutboundGateway: FtpOutboundGateway,
         getFileOutboundGateway: FtpOutboundGateway
@@ -148,7 +138,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             split<Message<*>> { it.payload }
             transform<FtpFileInfo> { fileTransformer(it) }
             channel { queue(10) }
-            transform<LibraryFile> { "/RFI No. LVA-AI-25-009/${it.fullPathName}" }
+            transform<LibraryFile> { "${it.fullPathName}" }
             handle(getFileOutboundGateway)
 
             handle { file: Message<*> ->
@@ -186,7 +176,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             setHttpMethod(HttpMethod.POST)
             setExpectedResponseType(String::class.java)
 
-            // Custom message converters
             setMessageConverters(
                 listOf(
                     org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(),
@@ -196,7 +185,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
 
         }
     }
-
 
     @Bean
     @Lazy
@@ -238,7 +226,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         return integrationFlow("imageChannel") {
             log("starting imageProcessing flow")
             transform<Message<File>> { m ->
-                //println("Image processor: $m")
                 val base64 = Base64.encode(m.payload.readBytes())
                 VisionApiRequest(
                     model = IMAGE_MODEL,
@@ -262,7 +249,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     @Bean
     fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel, imageChannel: QueueChannel): IntegrationFlow {
         return integrationFlow("textChannel") {
-            log("starting documentProcessingFlow")
             transform<Message<File>> { m ->
                 try {
                     val document = FileSystemDocumentLoader.loadDocument(m.payload.absolutePath, parser)
@@ -289,7 +275,6 @@ class OllamaConfiguration {
     @Bean
     @Lazy
     fun ollama(): OllamaContainer {
-        println("Starting ollama container init ...")
         val dockerImageName = DockerImageName.parse(OLLAMA_IMAGE)
         val dockerClient = DockerClientFactory.instance().client()
         val images = dockerClient.listImagesCmd().withReferenceFilter(NEW_IMAGE_NAME).exec()
@@ -299,11 +284,8 @@ class OllamaConfiguration {
             OllamaContainer(DockerImageName.parse(NEW_IMAGE_NAME).asCompatibleSubstituteFor(OLLAMA_IMAGE))
         }
         ollama.start()
-        println("Start pulling the doc model ... would take several minutes ...")
         try {
             ollama.execInContainer("ollama", "pull", DOCUMENT_MODEL)
-            println("Start pulling the image model ... would take several minutes ...")
-
             ollama.execInContainer("ollama", "pull", IMAGE_MODEL)
         } catch (e: IOException) {
             throw RuntimeException("Error pulling model", e);
@@ -314,4 +296,3 @@ class OllamaConfiguration {
         return ollama
     }
 }
-
