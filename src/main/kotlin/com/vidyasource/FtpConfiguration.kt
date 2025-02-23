@@ -26,12 +26,10 @@ import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.integration.annotation.ServiceActivator
 import org.springframework.integration.channel.DirectChannel
-import org.springframework.integration.channel.QueueChannel
+import org.springframework.integration.channel.ExecutorChannel
 import org.springframework.integration.dsl.IntegrationFlow
 import org.springframework.integration.dsl.integrationFlow
 import org.springframework.integration.file.FileHeaders
-import org.springframework.integration.file.FileReadingMessageSource
-import org.springframework.integration.file.filters.RegexPatternFileListFilter
 import org.springframework.integration.file.remote.gateway.AbstractRemoteFileOutboundGateway
 import org.springframework.integration.file.support.FileExistsMode
 import org.springframework.integration.ftp.filters.FtpRegexPatternFileListFilter
@@ -47,13 +45,15 @@ import org.testcontainers.ollama.OllamaContainer
 import org.testcontainers.utility.DockerImageName
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.Executors
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 val OLLAMA_IMAGE = "ollama/ollama:latest"
 val DOCUMENT_MODEL = "llama3.2:1b"
 val IMAGE_MODEL = "llama3.2-vision:11b"
-val NEW_IMAGE_NAME = "vidyasource/ollama-test"
+val NEW_DOC_IMAGE = "vidyasource/ollama-test-docs"
+val NEW_IMAGE_IMAGE = "vidyasource/ollama-test-images"
 
 @ConfigurationProperties(prefix = "ftp")
 data class FtpProperties @ConstructorBinding constructor(
@@ -69,8 +69,20 @@ data class LibraryFile(val fullPathName: String, val timestamp: Long)
 @Configuration
 class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     @Autowired
-    @Lazy
-    private lateinit var ollama: OllamaContainer
+    private lateinit var ollamaDocAIContainer: OllamaContainer
+    @Autowired
+    private lateinit var ollamaImageAIContainer: OllamaContainer
+
+    @Bean
+    fun chatModel(ollamaDocAIContainer: OllamaContainer): OllamaChatModel {
+        return OllamaChatModel.builder()
+            .baseUrl(ollamaDocAIContainer.getEndpoint())
+            .temperature(0.0)
+            .logRequests(true)
+            .logResponses(true)
+            .modelName(DOCUMENT_MODEL)
+            .build()
+    }
 
     fun ftpSessionFactory() = DefaultFtpSessionFactory().apply {
         setHost(ftpProperties.host)
@@ -90,39 +102,27 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     }
 
     @Bean
-    fun listOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "ls").apply {
-        setOption(AbstractRemoteFileOutboundGateway.Option.RECURSIVE)
-        setFilter(FtpRegexPatternFileListFilter("""^(?!.*\.zip$).*"""))
+    fun listOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "ls", "'RFI No. LVA-AI-25-009'").apply {
+        //setLocalDirectoryExpression(LiteralExpression("local/"))
+        setOption(
+            AbstractRemoteFileOutboundGateway.Option.RECURSIVE,
+            AbstractRemoteFileOutboundGateway.Option.PRESERVE_TIMESTAMP
+        )
+
+        //setOption(AbstractRemoteFileOutboundGateway.Option.NAME_ONLY)
+        setFilter(FtpRegexPatternFileListFilter("""^(?!.*\.zip$)(?!\.DS_Store$).*"""))
+
+
+        //outputChannel
+        //setFileExistsMode(FileExistsMode.APPEND)
     }
 
     @Bean
     fun getFileOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "get").apply {
         setLocalDirectoryExpression(LiteralExpression("local/"))
-        //setOption(AbstractRemoteFileOutboundGateway.Option.STREAM)
         setFileExistsMode(FileExistsMode.APPEND)
-        setSendTimeout(Long.MAX_VALUE)
+        //setSendTimeout(Long.MAX_VALUE)
         setLocalFilenameGeneratorExpressionString("#remoteFileName.replace(' ', '-')")
-    }
-
-
-    fun fileTransformer(ftpFileInfo: FtpFileInfo): LibraryFile {
-        return LibraryFile(
-            fullPathName = ftpFileInfo.filename,
-            timestamp = ftpFileInfo.modified
-        )
-    }
-
-
-    @Bean
-    fun fileReadingMessageSource(): FileReadingMessageSource = FileReadingMessageSource(10).apply {
-        setDirectory(File("/Users/neilchaudhuri/Vidya/applications/library-of-virginia-poc/local"))
-        setAutoCreateDirectory(true)
-
-        setFilter(RegexPatternFileListFilter("""^(?!.*\.writing$)(?!\.DS_Store$).*"""))
-        setScanEachPoll(true)
-        isUseWatchService = true
-        setWatchMaxDepth(2)
-
     }
 
 
@@ -133,25 +133,25 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         getFileOutboundGateway: FtpOutboundGateway
     ): IntegrationFlow {
         return integrationFlow(inputChannel) {
-            log("starting integration flow")
+           log("starting download flow")
             handle(listOutboundGateway)
             split<Message<*>> { it.payload }
-            transform<FtpFileInfo> { fileTransformer(it) }
-            channel { queue(10) }
-            transform<LibraryFile> { "${it.fullPathName}" }
+            //transform<FtpFileInfo> { fileTransformer(it) }
+            transform<Message<FtpFileInfo>> { "${it.payload.remoteDirectory}${it.payload.filename}" }
+            channel { queue(50) }
             handle(getFileOutboundGateway)
-
-            handle { file: Message<*> ->
-                println("Flow 1: $file")
+            route<Message<File>> { m ->
+                if (m.headers["file_remoteFile"].toString().lowercase().endsWith(".jpg")) "imageChannel" else "textChannel"
             }
         }
     }
 
-    @Bean
-    fun textChannel() = QueueChannel(10)
 
     @Bean
-    fun imageChannel() = QueueChannel(10)
+    fun textChannel() = ExecutorChannel(Executors.newCachedThreadPool())
+
+    @Bean
+    fun imageChannel() = ExecutorChannel(Executors.newCachedThreadPool())
 
 
     @Bean
@@ -172,10 +172,11 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     @Bean
     @ServiceActivator(inputChannel = "imageChannel", autoStartup = "false")
     fun httpHandler(): HttpRequestExecutingMessageHandler {
-        return HttpRequestExecutingMessageHandler("http://localhost:11434/api/chat").apply {
+        return HttpRequestExecutingMessageHandler("${ollamaImageAIContainer.getEndpoint()}/api/chat").apply {
             setHttpMethod(HttpMethod.POST)
             setExpectedResponseType(String::class.java)
 
+            // Custom message converters
             setMessageConverters(
                 listOf(
                     org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(),
@@ -186,28 +187,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         }
     }
 
-    @Bean
-    @Lazy
-    fun chatModel(ollama: OllamaContainer): OllamaChatModel {
-        return OllamaChatModel.builder()
-            .baseUrl(ollama.getEndpoint())
-            .temperature(0.0)
-            .logRequests(true)
-            .logResponses(true)
-            .modelName(DOCUMENT_MODEL)
-            .build()
-    }
-
-
-    @Bean
-    fun fileReaderFlow(fileReadingMessageSource: FileReadingMessageSource): IntegrationFlow {
-        return integrationFlow(fileReadingMessageSource) {
-            log("starting file reader flow")
-            route<Message<*>> { m ->
-                if (m.headers[FileHeaders.FILENAME].toString().endsWith(".jpg")) "imageChannel" else "textChannel"
-            }
-        }
-    }
 
     data class VisionApiRequest(
         val model: String,
@@ -220,19 +199,30 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
         val images: List<String>
     )
 
+
     @OptIn(ExperimentalEncodingApi::class)
     @Bean
     fun imageProcessingFlow(httpHandler: HttpRequestExecutingMessageHandler): IntegrationFlow {
         return integrationFlow("imageChannel") {
-            log("starting imageProcessing flow")
+          //  log("starting imageProcessing flow")
+            channel { queue() }
             transform<Message<File>> { m ->
+                println("Image processor flow")
                 val base64 = Base64.encode(m.payload.readBytes())
+                val prompt = """
+                    This is the file path of an image: %s
+                    
+                    Please provide a comprehensive summary that:
+                        1. Describes as much detail as possible about the image by using the image itself using the file path to discover dates, locations, organizations, occasions, and other entities for context. Ignore "/RFI No. LVA-AI-25-009" in the path
+                        2. Notes prominent locations and prominent individuals in Virginia politics or celebrities in other professions if you can identify them in the image. Do not guess.
+                """.trimIndent()
+                val path = "${m.headers["file_remoteDirectory"]}${m.headers["file_remoteFile"]}"
                 VisionApiRequest(
                     model = IMAGE_MODEL,
                     messages = listOf(
                         ApiMessage(
                             role = "user",
-                            content = "Describe this image in detail. Note any prominent individuals in Virginia politics or other positions of influence.",
+                            content = String.format(prompt, path),
                             images = listOf(base64)
                         )
                     )
@@ -241,58 +231,102 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             enrichHeaders { header<String>(MessageHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE) }
             handle(httpHandler)
             handle { m: Message<*> ->
-                println("Image processor result: $m")
+                println("Image processor result: ${m.payload}")
             }
         }
     }
 
     @Bean
-    fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel, imageChannel: QueueChannel): IntegrationFlow {
+    fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel): IntegrationFlow {
+        val prompt = """
+            This is the file path of a document: %s
+
+            Below is the full content of the document:
+            %s
+
+            Summarize the document. Ignore "/RFI No. LVA-AI-25-009" in the path, but use the file path to discover dates, locations, organizations, occasions, and other entities for context.
+        """.trimIndent()
         return integrationFlow("textChannel") {
+            //log("starting documentProcessingFlow")
+            channel { queue() }
             transform<Message<File>> { m ->
+                println("Doc processor headers: ${m.headers}")
+                val path = "${m.headers["file_remoteDirectory"]}${m.headers["file_remoteFile"]}"
+                println("Doc processor path: $path")
                 try {
                     val document = FileSystemDocumentLoader.loadDocument(m.payload.absolutePath, parser)
-                    val summary = chatModel.chat("Summarize this document: ${document.text()}")
-                    "Summary of ${m.headers[FileHeaders.FILENAME]}: $summary"
+                    val summary = chatModel.chat(String.format(prompt, path, document.text()))
+                    "Summary of ${m.headers["file_remoteFile"]}: $summary"
                 } catch (e: BlankDocumentException) {
-                    "Document ${m.headers[FileHeaders.FILENAME]} was blank: probably a PDF that was a scan."
+                    "Document ${m.headers["file_remoteFile"]} was blank: probably a PDF that was a scan."
                 }
             }
             handle { m: Message<*> ->
-                println("Doc processor: $m")
+                if (!m.payload.toString().contains("blank", ignoreCase = true)) {
+                    println("Doc processor result: $m")
+                }
             }
         }
     }
 
+
     @PreDestroy
     fun cleanup() {
-        ollama.stop()
+        ollamaDocAIContainer.stop()
+        ollamaImageAIContainer.stop()
     }
 }
 
 @Configuration
 class OllamaConfiguration {
     @Bean
-    @Lazy
-    fun ollama(): OllamaContainer {
+    fun ollamaDocAIContainer(): OllamaContainer {
+        println("Starting ollama doc container init ...")
         val dockerImageName = DockerImageName.parse(OLLAMA_IMAGE)
         val dockerClient = DockerClientFactory.instance().client()
-        val images = dockerClient.listImagesCmd().withReferenceFilter(NEW_IMAGE_NAME).exec()
+        val images = dockerClient.listImagesCmd().withReferenceFilter(NEW_DOC_IMAGE).exec()
         val ollama = if (images.isEmpty()) {
             OllamaContainer(dockerImageName)
         } else {
-            OllamaContainer(DockerImageName.parse(NEW_IMAGE_NAME).asCompatibleSubstituteFor(OLLAMA_IMAGE))
+            OllamaContainer(DockerImageName.parse(NEW_DOC_IMAGE).asCompatibleSubstituteFor(OLLAMA_IMAGE))
         }
         ollama.start()
+        println("Start pulling the doc model ... would take several minutes ...")
         try {
             ollama.execInContainer("ollama", "pull", DOCUMENT_MODEL)
+        } catch (e: IOException) {
+            throw RuntimeException("Error pulling doc model", e);
+        } catch (e: InterruptedException) {
+            throw RuntimeException("Error pulling doc model", e);
+        }
+        ollama.commitToImage(NEW_DOC_IMAGE)
+        println("Doc image endpoint ${ollama.getEndpoint()}")
+        return ollama
+    }
+
+    @Bean
+    fun ollamaImageAIContainer(): OllamaContainer {
+        println("Starting ollama image container init ...")
+        val dockerImageName = DockerImageName.parse(OLLAMA_IMAGE)
+        val dockerClient = DockerClientFactory.instance().client()
+        val images = dockerClient.listImagesCmd().withReferenceFilter(NEW_IMAGE_IMAGE).exec()
+        val ollama = if (images.isEmpty()) {
+            OllamaContainer(dockerImageName)
+        } else {
+            OllamaContainer(DockerImageName.parse(NEW_IMAGE_IMAGE).asCompatibleSubstituteFor(OLLAMA_IMAGE))
+        }
+        ollama.start()
+        println("Start pulling the image model ... would take several minutes ...")
+        try {
             ollama.execInContainer("ollama", "pull", IMAGE_MODEL)
         } catch (e: IOException) {
-            throw RuntimeException("Error pulling model", e);
+            throw RuntimeException("Error pulling image model", e);
         } catch (e: InterruptedException) {
-            throw RuntimeException("Error pulling model", e);
+            throw RuntimeException("Error pulling image model", e);
         }
-        ollama.commitToImage(NEW_IMAGE_NAME)
+        ollama.commitToImage(NEW_IMAGE_IMAGE)
+        println("Image image endpoint ${ollama.getEndpoint()}")
         return ollama
     }
 }
+
