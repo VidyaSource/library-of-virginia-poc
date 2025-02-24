@@ -231,7 +231,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             enrichHeaders { header<String>(MessageHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE) }
             handle(httpHandler)
             handle { m: Message<*> ->
-                println("Image processor result: ${m.payload}")
+                println("Image processor result for ${m.headers["file_remoteFile"]}: ${m.payload}")
             }
         }
     }
@@ -263,7 +263,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             }
             handle { m: Message<*> ->
                 if (!m.payload.toString().contains("blank", ignoreCase = true)) {
-                    println("Doc processor result: $m")
+                    println("Doc processor result for ${m.headers["file_remoteFile"]}: ${m.payload}")
                 }
             }
         }
