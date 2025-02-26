@@ -29,7 +29,6 @@ import org.springframework.integration.channel.DirectChannel
 import org.springframework.integration.channel.ExecutorChannel
 import org.springframework.integration.dsl.IntegrationFlow
 import org.springframework.integration.dsl.integrationFlow
-import org.springframework.integration.file.FileHeaders
 import org.springframework.integration.file.remote.gateway.AbstractRemoteFileOutboundGateway
 import org.springframework.integration.file.support.FileExistsMode
 import org.springframework.integration.ftp.filters.FtpRegexPatternFileListFilter
@@ -103,25 +102,17 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
 
     @Bean
     fun listOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "ls", "'RFI No. LVA-AI-25-009'").apply {
-        //setLocalDirectoryExpression(LiteralExpression("local/"))
         setOption(
             AbstractRemoteFileOutboundGateway.Option.RECURSIVE,
             AbstractRemoteFileOutboundGateway.Option.PRESERVE_TIMESTAMP
         )
-
-        //setOption(AbstractRemoteFileOutboundGateway.Option.NAME_ONLY)
         setFilter(FtpRegexPatternFileListFilter("""^(?!.*\.zip$)(?!\.DS_Store$).*"""))
-
-
-        //outputChannel
-        //setFileExistsMode(FileExistsMode.APPEND)
     }
 
     @Bean
     fun getFileOutboundGateway() = FtpOutboundGateway(ftpSessionFactory(), "get").apply {
         setLocalDirectoryExpression(LiteralExpression("local/"))
         setFileExistsMode(FileExistsMode.APPEND)
-        //setSendTimeout(Long.MAX_VALUE)
         setLocalFilenameGeneratorExpressionString("#remoteFileName.replace(' ', '-')")
     }
 
@@ -136,7 +127,6 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
            log("starting download flow")
             handle(listOutboundGateway)
             split<Message<*>> { it.payload }
-            //transform<FtpFileInfo> { fileTransformer(it) }
             transform<Message<FtpFileInfo>> { "${it.payload.remoteDirectory}${it.payload.filename}" }
             channel { queue(50) }
             handle(getFileOutboundGateway)
@@ -204,17 +194,13 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     @Bean
     fun imageProcessingFlow(httpHandler: HttpRequestExecutingMessageHandler): IntegrationFlow {
         return integrationFlow("imageChannel") {
-          //  log("starting imageProcessing flow")
+            log("starting imageProcessing flow")
             channel { queue() }
             transform<Message<File>> { m ->
                 println("Image processor flow")
                 val base64 = Base64.encode(m.payload.readBytes())
                 val prompt = """
-                    This is the file path of an image: %s
-                    
-                    Please provide a comprehensive summary that:
-                        1. Describes as much detail as possible about the image by using the image itself using the file path to discover dates, locations, organizations, occasions, and other entities for context. Ignore "/RFI No. LVA-AI-25-009" in the path
-                        2. Notes prominent locations and prominent individuals in Virginia politics or celebrities in other professions if you can identify them in the image. Do not guess.
+                    Describe the image in as much detail as possible and parse the following info in your write up to discover dates, locations, organizations, occasions, and other entities for context: {image_name: %s}
                 """.trimIndent()
                 val path = "${m.headers["file_remoteDirectory"]}${m.headers["file_remoteFile"]}"
                 VisionApiRequest(
@@ -231,7 +217,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             enrichHeaders { header<String>(MessageHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE) }
             handle(httpHandler)
             handle { m: Message<*> ->
-                println("Image processor result for ${m.headers["file_remoteFile"]}: ${m.payload}")
+                println("Image processor result for ${m.headers["file_remoteDirectory"]}${m.headers["file_remoteFile"]}: ${m.payload}")
             }
         }
     }
@@ -239,15 +225,15 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
     @Bean
     fun documentProcessingFlow(parser: DocumentParser, chatModel: OllamaChatModel): IntegrationFlow {
         val prompt = """
-            This is the file path of a document: %s
+            This is the file path of a document which may contain hyphenated dates and the names of organizations and events related to the document: %s
 
             Below is the full content of the document:
             %s
 
-            Summarize the document. Ignore "/RFI No. LVA-AI-25-009" in the path, but use the file path to discover dates, locations, organizations, occasions, and other entities for context.
+            Summarize the document. Ignore the top-level directory in the file path if present, but use other information in the file path to add context to the summary.
         """.trimIndent()
         return integrationFlow("textChannel") {
-            //log("starting documentProcessingFlow")
+            log("starting documentProcessingFlow")
             channel { queue() }
             transform<Message<File>> { m ->
                 println("Doc processor headers: ${m.headers}")
@@ -263,7 +249,7 @@ class FtpConnectionConfiguration(val ftpProperties: FtpProperties) {
             }
             handle { m: Message<*> ->
                 if (!m.payload.toString().contains("blank", ignoreCase = true)) {
-                    println("Doc processor result for ${m.headers["file_remoteFile"]}: ${m.payload}")
+                    println("Doc processor result for ${m.headers["file_remoteDirectory"]}${m.headers["file_remoteFile"]}: ${m.payload}")
                 }
             }
         }
