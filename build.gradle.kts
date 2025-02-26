@@ -31,10 +31,12 @@ dependencies {
     implementation("dev.langchain4j:langchain4j-ollama:1.0.0-beta1")
     implementation("org.springframework.integration:spring-integration-core:6.4.1")
     implementation("org.springframework.integration:spring-integration-ftp:6.4.1")
+    implementation("org.springframework.integration:spring-integration-http:6.4.1")
+    implementation("dev.langchain4j:langchain4j-ollama:1.0.0-beta1")
+    implementation("org.testcontainers:ollama:1.20.4")
 
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
 
-    testImplementation("org.testcontainers:ollama:1.0.0-beta1:1.19.1")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
